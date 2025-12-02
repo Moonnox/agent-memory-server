@@ -1,0 +1,67 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA', '.']
+    env:
+      - 'DOCKER_BUILDKIT=1'
+
+  # Tag as latest
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA', 'gcr.io/$PROJECT_ID/agent-memory-server:latest']
+
+  # Push the image with commit SHA tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA']
+
+  # Push the latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/agent-memory-server:latest']
+
+  # Deploy API service to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'agent-memory-api'
+      - '--image=gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA'
+      - '--region=$_REGION'
+      - '--platform=managed'
+      - '--port=8080'
+      - '--command=agent-memory'
+      - '--args=api,--host,0.0.0.0,--port,8080'
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--min-instances=1'
+      - '--max-instances=10'
+      - '--set-env-vars=PORT=8080'
+
+  # Deploy Worker service to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'agent-memory-worker'
+      - '--image=gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA'
+      - '--region=$_REGION'
+      - '--platform=managed'
+      - '--no-allow-unauthenticated'
+      - '--command=agent-memory'
+      - '--args=task-worker,--concurrency,10'
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--min-instances=1'
+      - '--max-instances=3'
+      - '--no-cpu-throttling'
+
+images:
+  - 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/agent-memory-server:latest'
+
+substitutions:
+  _REGION: us-central1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
