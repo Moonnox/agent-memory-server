@@ -47,6 +47,11 @@ dependencies = [
     "python-ulid>=3.0.0",
     "bcrypt>=4.0.0",
     "langchain-community>=0.3.27",
+    "litellm>=1.0.0",
+    "google-cloud-aiplatform>=1.38.0",
+    "langchain-postgres>=0.0.16",
+    "psycopg-binary>=3.3.0",
+    "asyncpg>=0.31.0",
 ]
 
 [project.scripts]
@@ -137,6 +142,11 @@ indent-style = "space"
 dev = [
     "agent-memory-client",
     "bertopic>=0.16.4,<0.17.0",
+]
+pgvector = [
+    "langchain-postgres>=0.0.12",
+    "psycopg[binary]>=3.1.0",
+    "asyncpg>=0.29.0",
 ]
 
 [dependency-groups]

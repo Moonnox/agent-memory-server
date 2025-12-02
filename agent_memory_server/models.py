@@ -122,6 +122,10 @@ class MemoryRecord(BaseModel):
         default=None,
         description="Optional user ID for the memory record",
     )
+    agent_id: str | None = Field(
+        default=None,
+        description="Optional agent ID for the memory record",
+    )
     namespace: str | None = Field(
         default=None,
         description="Optional namespace for the memory record",
@@ -186,6 +190,10 @@ class MemoryRecord(BaseModel):
     extraction_strategy_config: dict[str, Any] = Field(
         default_factory=dict,
         description="Configuration for the extraction strategy used",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Arbitrary metadata for the memory (client-specific)",
     )
 
 

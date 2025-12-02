@@ -11,6 +11,7 @@ from agent_memory_server.auth import verify_auth_config
 from agent_memory_server.config import MODEL_CONFIGS, ModelProvider, settings
 from agent_memory_server.docket_tasks import register_tasks
 from agent_memory_server.healthcheck import router as health_router
+from agent_memory_server.llms import get_model_config
 from agent_memory_server.logging import get_logger
 from agent_memory_server.utils.redis import (
     _redis_pool as connection_pool,
@@ -34,7 +35,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # Check for required API keys
-    available_providers = []
+    available_providers = [ModelProvider.LITELLM]  # LiteLLM is always available as a library
 
     if settings.openai_api_key:
         available_providers.append(ModelProvider.OPENAI)
@@ -49,8 +50,8 @@ async def lifespan(app: FastAPI):
         )
 
     # Check if the configured models are available
-    generation_model_config = MODEL_CONFIGS.get(settings.generation_model)
-    embedding_model_config = MODEL_CONFIGS.get(settings.embedding_model)
+    generation_model_config = get_model_config(settings.generation_model)
+    embedding_model_config = get_model_config(settings.embedding_model)
 
     if (
         generation_model_config
@@ -68,11 +69,22 @@ async def lifespan(app: FastAPI):
             f"Selected embedding model {settings.embedding_model} requires {embedding_model_config.provider} API key"
         )
 
-    # If long-term memory is enabled but OpenAI isn't available, warn user
-    if settings.long_term_memory and ModelProvider.OPENAI not in available_providers:
-        logger.warning(
-            "Long-term memory requires OpenAI for embeddings, but OpenAI API key is not set"
-        )
+    # If long-term memory is enabled but we don't have a valid embedding provider
+    if settings.long_term_memory:
+        if (
+            embedding_model_config.provider == ModelProvider.OPENAI
+            and ModelProvider.OPENAI not in available_providers
+        ):
+            logger.warning(
+                "Long-term memory requires OpenAI for embeddings, but OpenAI API key is not set"
+            )
+        elif embedding_model_config.provider == ModelProvider.ANTHROPIC:
+             # This case is handled in vectorstore_factory (fallback to OpenAI)
+             # but if OpenAI is missing, it will fail there.
+             if ModelProvider.OPENAI not in available_providers:
+                 logger.warning(
+                     "Anthropic embedding model will fallback to OpenAI, but OpenAI API key is not set"
+                 )
 
     # Set up Redis connection if long-term memory is enabled
     if settings.long_term_memory:

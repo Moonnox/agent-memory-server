@@ -28,6 +28,7 @@ from pydantic.types import SecretStr
 
 # RedisVL uses the same python-ulid library as this project, so no patching needed
 from agent_memory_server.config import settings
+from agent_memory_server.llms import get_model_config
 from agent_memory_server.vectorstore_adapter import (
     LangChainVectorStoreAdapter,
     MemoryRedisVectorStore,
@@ -39,15 +40,45 @@ from agent_memory_server.vectorstore_adapter import (
 logger = logging.getLogger(__name__)
 
 
+class LiteLLMEmbeddings(Embeddings):
+    """LiteLLM embeddings wrapper that uses the litellm library directly."""
+
+    def __init__(self, model: str):
+        self.model = model
+        # Import litellm here to avoid hard dependency at module level
+        try:
+            import litellm
+            self.litellm = litellm
+        except ImportError:
+            raise ImportError(
+                "litellm not installed. Please install it with `pip install litellm`"
+            )
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed search docs."""
+        # Process in batches to verify rate limits and such if needed, 
+        # but litellm handles many things. 
+        # For simplicity, we process one by one or let litellm handle lists if supported well.
+        # litellm.embedding supports input as list.
+        response = self.litellm.embedding(model=self.model, input=texts, auto_truncate=True, dimensions=768)
+        # response is a list of EmbeddingResponse objects or dicts
+        # structure: { "data": [ { "embedding": [...] }, ... ] }
+        return [item["embedding"] for item in response["data"]]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed query text."""
+        response = self.litellm.embedding(model=self.model, input=[text])
+        return response["data"][0]["embedding"]
+
+
 def create_embeddings() -> Embeddings:
     """Create an embeddings instance based on configuration.
 
     Returns:
         An Embeddings instance
     """
-    embedding_config = settings.embedding_model_config
-    # Only support ModelConfig objects
-    provider = embedding_config.provider if embedding_config else "openai"
+    embedding_config = get_model_config(settings.embedding_model)
+    provider = embedding_config.provider
 
     if provider == "openai":
         try:
@@ -99,10 +130,19 @@ def create_embeddings() -> Embeddings:
         except Exception as e:
             logger.error(f"Error creating fallback OpenAI embeddings: {e}")
             raise
+    elif provider == "litellm":
+        try:
+            # Use our local wrapper
+            return LiteLLMEmbeddings(
+                model=settings.embedding_model,
+            )
+        except Exception as e:
+            logger.error(f"Error creating LiteLLM embeddings: {e}")
+            raise
     else:
         raise ValueError(
             f"Unsupported embedding provider: {provider}. "
-            f"Supported providers: openai, anthropic (falls back to OpenAI)"
+            f"Supported providers: openai, anthropic (falls back to OpenAI), litellm"
         )
 
 

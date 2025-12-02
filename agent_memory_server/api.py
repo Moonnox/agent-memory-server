@@ -610,6 +610,7 @@ async def create_long_term_memory(
         raise HTTPException(status_code=400, detail="Long-term memory is disabled")
 
     # Validate and process memories
+    print(f"📥 Received request to create {len(payload.memories)} long-term memories")
     for memory in payload.memories:
         # Enforce that ID is required on memory sent from clients
         if not memory.id:
@@ -617,6 +618,18 @@ async def create_long_term_memory(
                 status_code=400, detail="id is required for all memory records"
             )
 
+        # Lift user_id from metadata if not present at top level
+        if not memory.user_id and memory.metadata and "user_id" in memory.metadata:
+            memory.user_id = memory.metadata["user_id"]
+            print(f"🔧 DEBUG: Lifted user_id '{memory.user_id}' from metadata for memory {memory.id}")
+        else:
+            print(f"ℹ️ DEBUG: user_id is '{memory.user_id}' for memory {memory.id} (metadata keys: {list(memory.metadata.keys()) if memory.metadata else 'None'})")
+
+        # Lift agent_id from metadata if not present at top level
+        if not memory.agent_id and memory.metadata and "agent_id" in memory.metadata:
+            memory.agent_id = memory.metadata["agent_id"]
+            print(f"🔧 DEBUG: Lifted agent_id '{memory.agent_id}' from metadata for memory {memory.id}")
+            
         # Ensure persisted_at is server-assigned and read-only for clients
         # Clear any client-provided persisted_at value
         memory.persisted_at = None

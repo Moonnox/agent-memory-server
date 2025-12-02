@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 import anthropic
+import litellm
 import numpy as np
 from openai import AsyncOpenAI
 
@@ -23,9 +24,18 @@ def get_model_config(model_name: str) -> ModelConfig:
     if model_name in MODEL_CONFIGS:
         return MODEL_CONFIGS[model_name]
 
-    # Default to GPT-4o-mini if model not found
-    logger.warning(f"Model {model_name} not found in configuration, using gpt-4o-mini")
-    return MODEL_CONFIGS["gpt-4o-mini"]
+    # Use LiteLLM for unknown models
+    logger.info(
+        f"Model {model_name} not found in static configuration, assuming LiteLLM provider"
+    )
+    return ModelConfig(
+        provider=ModelProvider.LITELLM,
+        name=model_name,
+        # Default values since we can't know them for arbitrary models
+        # Users should be careful with max_tokens for unknown models
+        max_tokens=128000,
+        embedding_dimensions=1536,
+    )
 
 
 class ChatResponse:
@@ -219,6 +229,116 @@ class OpenAIClientWrapper:
             raise
 
 
+class LiteLLMClientWrapper:
+    """Wrapper for LiteLLM client"""
+
+    def __init__(self, **kwargs):
+        """Initialize the LiteLLM client"""
+        # LiteLLM does not need initialization
+        pass
+
+    async def create_chat_completion(
+        self,
+        model: str,
+        prompt: str,
+        response_format: dict[str, str] | None = None,
+        functions: list[dict[str, Any]] | None = None,
+        function_call: dict[str, str] | None = None,
+    ) -> ChatResponse:
+        """Create a chat completion using LiteLLM"""
+        try:
+            kwargs = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+
+            if response_format:
+                # LiteLLM supports response_format for some providers
+                kwargs["response_format"] = response_format
+            if functions:
+                # Map functions/tools if necessary, but LiteLLM often handles it
+                # For now, pass as is, assuming LiteLLM compatibility
+                kwargs["functions"] = functions
+            if function_call:
+                kwargs["function_call"] = function_call
+
+            response = await litellm.acompletion(**kwargs)
+
+            # Unified format handling
+            total_tokens = 0
+            if hasattr(response, "usage"):
+                if isinstance(response.usage, dict):
+                    total_tokens = response.usage.get("total_tokens", 0)
+                else:
+                    total_tokens = getattr(response.usage, "total_tokens", 0)
+
+            return ChatResponse(
+                choices=response.choices,
+                usage={"total_tokens": total_tokens},
+            )
+        except Exception as e:
+            logger.error(f"Error creating chat completion with LiteLLM: {e}")
+            raise
+
+    async def create_embedding(self, query_vec: list[str]) -> np.ndarray:
+        """Create embeddings using LiteLLM"""
+        try:
+            # We don't have the model name here in arguments, which is a flaw in the interface
+            # The current interface assumes the client is bound to a provider but the method
+            # takes `query_vec`.
+            # However, `OpenAIClientWrapper` uses a hardcoded model "text-embedding-ada-002" inside create_embedding!
+            # Anthropic wrapper raises NotImplementedError.
+
+            # We need to know which model to use.
+            # But the interface is `create_embedding(self, query_vec: list[str])`.
+            # The model is not passed.
+            # We can use the configured embedding model from settings if available, or pass it in __init__.
+
+            # Let's check how get_model_client is used. It's used to get a client for a specific model_name.
+            # But `create_embedding` doesn't take model_name.
+
+            # I should modify `LiteLLMClientWrapper` to accept `model_name` in `__init__` if possible,
+            # or use `settings.embedding_model` if this client is intended for embeddings.
+
+            # Wait, `get_model_client` takes `model_name`.
+            # The `OpenAIClientWrapper` has `embedding_client` initialized with API keys, but `create_embedding` uses a hardcoded model "text-embedding-ada-002".
+            # This seems like a bug or limitation in `OpenAIClientWrapper`.
+
+            # If I look at `agent_memory_server/llms.py`:
+            # embedding_model = "text-embedding-ada-002"
+            # It ignores the `model_name` passed to `get_model_client`!
+
+            # For LiteLLM, I should probably try to use the model name that this client was created for, if possible.
+            # But `get_model_client` creates a client for a model.
+            # `get_model_client(model_name)` -> returns a client wrapper.
+            # So `LiteLLMClientWrapper` should probably store the `model_name` if it's going to use it for embeddings.
+
+            # However, `OpenAIClientWrapper` doesn't store the model name.
+
+            # Let's assume for now that if we are using LiteLLM for embeddings, we should pass the model name to `create_embedding`.
+            # But the interface is fixed.
+
+            # I will change `__init__` to accept `model_name` optionally, or just rely on `settings.embedding_model`.
+            # Actually, `get_model_client` is called with a specific `model_name`.
+            # If I change `get_model_client` to pass `model_name` to the wrapper constructor, that would be better.
+
+            # For now, I'll stick to the existing pattern but maybe default to `settings.embedding_model` for embeddings.
+            
+            embedding_model = settings.embedding_model
+            
+            response = await litellm.aembedding(
+                model=embedding_model,
+                input=query_vec
+            )
+            
+            embeddings = [item["embedding"] for item in response.data]
+            return np.array(embeddings, dtype=np.float32)
+
+        except Exception as e:
+            logger.error(f"Error creating embedding with LiteLLM: {e}")
+            raise
+
+
 # Global LLM client cache
 _model_clients = {}
 
@@ -226,7 +346,7 @@ _model_clients = {}
 # TODO: This should take a provider as input, not model name, and cache on provider
 async def get_model_client(
     model_name: str,
-) -> OpenAIClientWrapper | AnthropicClientWrapper:
+) -> OpenAIClientWrapper | AnthropicClientWrapper | LiteLLMClientWrapper:
     """Get the appropriate client for a model using the factory.
 
     This is a module-level function that caches clients for reuse.
@@ -253,6 +373,8 @@ async def get_model_client(
                 api_key=settings.anthropic_api_key,
                 base_url=settings.anthropic_api_base,
             )
+        elif model_config.provider == ModelProvider.LITELLM:
+            model = LiteLLMClientWrapper()
 
         if model:
             _model_clients[model_name] = model

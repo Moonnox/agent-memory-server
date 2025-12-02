@@ -531,6 +531,10 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
             # Generate hash if not provided
             if not memory.memory_hash:
                 memory.memory_hash = self.generate_memory_hash(memory)
+                
+            # Set persistence timestamp
+            if not memory.persisted_at:
+                memory.persisted_at = datetime.now(UTC)
 
             doc = self.memory_to_document(memory)
             logger.info(

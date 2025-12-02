@@ -348,7 +348,7 @@ async def merge_memories_with_llm(
     The merged memory:
     """
 
-    model_name = "gpt-4o-mini"
+    model_name = settings.fast_model
 
     if not llm_client:
         model_client: (
@@ -448,7 +448,7 @@ async def compact_long_term_memories(
         redis_client = await get_redis_conn()
 
     if not llm_client:
-        llm_client = await get_model_client(model_name="gpt-4o-mini")
+        llm_client = await get_model_client(model_name=settings.fast_model)
 
     logger.info(
         f"Starting memory compaction: namespace={namespace}, "
@@ -816,32 +816,60 @@ async def index_long_term_memories(
     # Get the VectorStore adapter and add memories
     adapter = await get_vectorstore_adapter()
 
+    # Filter memories to persist based on configuration
+    memories_to_persist = []
+    memories_for_extraction = []
+
+    for memory in processed_memories:
+        # Always persist if it's already an extracted/discrete memory
+        if memory.discrete_memory_extracted == "t":
+            print(f"💾 DEBUG: Persisting extracted memory {memory.id} (extracted='t')")
+            memories_to_persist.append(memory)
+        # If it's a raw message, check configuration
+        elif settings.index_all_messages_in_long_term_memory:
+            print(f"💾 DEBUG: Persisting raw memory {memory.id} (index_all=True)")
+            memories_to_persist.append(memory)
+            memories_for_extraction.append(memory)
+        else:
+            print(f"🚫 DEBUG: Skipping persistence for raw memory {memory.id} (index_all=False)")
+            # Don't persist raw messages, but keep them for extraction
+            memories_for_extraction.append(memory)
+
     # Add memories to the vector store
-    try:
-        ids = await adapter.add_memories(processed_memories)
-        logger.info(f"Indexed {len(processed_memories)} memories with IDs: {ids}")
-    except Exception as e:
-        logger.error(f"Error indexing memories: {e}")
-        raise
+    if memories_to_persist:
+        try:
+            ids = await adapter.add_memories(memories_to_persist)
+            logger.info(f"Indexed {len(memories_to_persist)} memories with IDs: {ids}")
+            # Console logging for visibility
+            print(f"📝 Created {len(memories_to_persist)} new memories: {', '.join(ids)}")
+            for memory in memories_to_persist:
+                print(f"   - [{memory.memory_type}] {memory.text[:100]}...")
+        except Exception as e:
+            logger.error(f"Error indexing memories: {e}")
+            raise
+    else:
+        logger.info("Skipping persistence of raw messages based on configuration")
 
     # Schedule background tasks for topic/entity extraction
-    for memory in processed_memories:
+    for memory in memories_to_persist:
         background_tasks.add_task(extract_memory_structure, memory)
 
     if settings.enable_discrete_memory_extraction:
-        needs_extraction = [
-            memory
-            for memory in processed_memories
-            if memory.discrete_memory_extracted == "f"
-        ]
-        # Extract discrete memories from the indexed messages and persist
-        # them as separate long-term memory records. This process also
-        # runs deduplication if requested.
-        background_tasks.add_task(
-            extract_memories_with_strategy,
-            memories=needs_extraction,
-            deduplicate=deduplicate,
-        )
+        # Use memories_for_extraction which includes raw messages even if they weren't persisted
+        needs_extraction = memories_for_extraction
+        
+        print(f"🔍 DEBUG: Extraction check - Enabled: {settings.enable_discrete_memory_extraction}, "
+              f"Candidates: {len(needs_extraction)}/{len(processed_memories)}")
+        
+        if needs_extraction:
+            print(f"🚀 DEBUG: Running extraction directly for {len(needs_extraction)} memories")
+            # Extract discrete memories directly since we are already in a background task
+            await extract_memories_with_strategy(
+                memories=needs_extraction,
+                deduplicate=deduplicate,
+            )
+        else:
+            print("⚠️ DEBUG: No memories needing extraction found.")
 
 
 async def search_long_term_memories(
@@ -886,35 +914,54 @@ async def search_long_term_memories(
     Returns:
         MemoryRecordResults containing matching memories
     """
+    import time
+    start_time = time.time()
+
     # Optimize query for vector search if requested.
     search_query = text
     optimized_applied = False
     if optimize_query and text:
-        search_query = await optimize_query_for_vector_search(text)
-        optimized_applied = True
+        try:
+            opt_start = time.time()
+            search_query = await optimize_query_for_vector_search(text)
+            opt_end = time.time()
+            optimized_applied = True
+            print(f"⏱️ DEBUG: Query optimization: {(opt_end - opt_start)*1000:.2f}ms")
+        except Exception as e:
+            logger.error(f"Error optimizing query: {e}")
 
     # Get the VectorStore adapter
+    adapter_start = time.time()
     adapter = await get_vectorstore_adapter()
+    print(f"⏱️ DEBUG: Adapter init: {(time.time() - adapter_start)*1000:.2f}ms")
 
     # Delegate search to the adapter
-    results = await adapter.search_memories(
-        query=search_query,
-        session_id=session_id,
-        user_id=user_id,
-        namespace=namespace,
-        created_at=created_at,
-        last_accessed=last_accessed,
-        topics=topics,
-        entities=entities,
-        memory_type=memory_type,
-        event_date=event_date,
-        memory_hash=memory_hash,
-        distance_threshold=distance_threshold,
-        server_side_recency=server_side_recency,
-        recency_params=recency_params,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        search_start = time.time()
+        results = await adapter.search_memories(
+            query=search_query,
+            session_id=session_id,
+            user_id=user_id,
+            namespace=namespace,
+            created_at=created_at,
+            last_accessed=last_accessed,
+            topics=topics,
+            entities=entities,
+            memory_type=memory_type,
+            event_date=event_date,
+            memory_hash=memory_hash,
+            distance_threshold=distance_threshold,
+            server_side_recency=server_side_recency,
+            recency_params=recency_params,
+            limit=limit,
+            offset=offset,
+        )
+        search_end = time.time()
+        print(f"⏱️ DEBUG: Vector search: {(search_end - search_start)*1000:.2f}ms")
+        print(f"⏱️ DEBUG: Total search time: {(search_end - start_time)*1000:.2f}ms (Found {results.total} results)")
+    except Exception as e:
+        logger.error(f"Error searching long-term memories: {e}")
+        return MemoryRecordResults(memories=[], total=0)
 
     # If an optimized query with a strict distance threshold returns no results,
     # retry once with the original query to preserve recall.
@@ -925,6 +972,8 @@ async def search_long_term_memories(
             and results.total == 0
             and search_query != text
         ):
+            logger.info("Optimized query returned no results; retrying with original query.")
+            retry_start = time.time()
             results = await adapter.search_memories(
                 query=text,
                 session_id=session_id,
@@ -943,8 +992,9 @@ async def search_long_term_memories(
                 limit=limit,
                 offset=offset,
             )
-    except Exception:
-        # Best-effort fallback; return the original results on any error
+            print(f"⏱️ DEBUG: Retry search time: {(time.time() - retry_start)*1000:.2f}ms")
+    except Exception as e:
+        logger.error(f"Error during search retry: {e}")
         pass
 
     return results
@@ -1181,7 +1231,7 @@ async def deduplicate_by_semantic_search(
         redis_client = await get_redis_conn()
 
     if not llm_client:
-        llm_client = await get_model_client(model_name="gpt-4o-mini")
+        llm_client = await get_model_client(model_name=settings.fast_model)
 
     # Use vector store adapter to find semantically similar memories
     adapter = await get_vectorstore_adapter()

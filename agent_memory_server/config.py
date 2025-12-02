@@ -16,6 +16,7 @@ class ModelProvider(str, Enum):
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    LITELLM = "litellm"
 
 
 class ModelConfig(BaseModel):
@@ -186,6 +187,10 @@ class Settings(BaseSettings):
     generation_model: str = "gpt-4o"
     embedding_model: str = "text-embedding-3-small"
 
+    # PostgreSQL/Supabase configuration (for PGVector backend)
+    # Connection string format: postgresql+asyncpg://user:password@host:port/database
+    postgres_url: str | None = None
+
     # Model selection for query optimization
     slow_model: str = "gpt-4o"  # Slower, more capable model for complex tasks
     fast_model: str = (
@@ -254,6 +259,11 @@ class Settings(BaseSettings):
     auth0_client_id: str | None = None
     auth0_client_secret: str | None = None
 
+    # Vertex AI Configuration
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    google_application_credentials: str | None = None
+
     # Working memory settings
     summarization_threshold: float = (
         0.7  # Fraction of context window that triggers summarization
@@ -314,6 +324,17 @@ Optimized query:"""
 
 
 settings = Settings()
+
+
+# Propagate Vertex AI settings to environment variables for LiteLLM
+# This ensures that if these are set via Settings (e.g. from .env or other sources),
+# they are available to LiteLLM which relies on environment variables.
+if settings.vertex_project and "VERTEX_PROJECT" not in os.environ:
+    os.environ["VERTEX_PROJECT"] = settings.vertex_project
+if settings.vertex_location and "VERTEX_LOCATION" not in os.environ:
+    os.environ["VERTEX_LOCATION"] = settings.vertex_location
+if settings.google_application_credentials and "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
 
 
 def get_config():
