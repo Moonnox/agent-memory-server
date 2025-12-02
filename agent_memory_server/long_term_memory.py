@@ -1170,9 +1170,9 @@ async def deduplicate_by_id(
     adapter = await get_vectorstore_adapter()
 
     # Search for existing memories with the same id
-    # Use a dummy query since we're filtering by id, not doing semantic search
+    # Use the memory text as query since embedding APIs require non-empty text
     results = await adapter.search_memories(
-        query="",  # Empty query since we're filtering by id
+        query=memory.text,
         session_id=session_id_filter,
         user_id=user_id_filter,
         namespace=namespace_filter,

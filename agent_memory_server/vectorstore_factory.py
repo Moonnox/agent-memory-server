@@ -60,14 +60,18 @@ class LiteLLMEmbeddings(Embeddings):
         # but litellm handles many things. 
         # For simplicity, we process one by one or let litellm handle lists if supported well.
         # litellm.embedding supports input as list.
-        response = self.litellm.embedding(model=self.model, input=texts, auto_truncate=True, dimensions=768)
+        response = self.litellm.embedding(model=self.model, input=texts, auto_truncate=True, dimensions=1536)
         # response is a list of EmbeddingResponse objects or dicts
         # structure: { "data": [ { "embedding": [...] }, ... ] }
         return [item["embedding"] for item in response["data"]]
 
     def embed_query(self, text: str) -> list[float]:
         """Embed query text."""
-        response = self.litellm.embedding(model=self.model, input=[text])
+        # Handle empty text - some APIs (like Gemini) reject empty strings
+        # Use a placeholder since empty queries are typically used with ID filters
+        if not text or not text.strip():
+            text = " "
+        response = self.litellm.embedding(model=self.model, input=[text], auto_truncate=True, dimensions=1536)
         return response["data"][0]["embedding"]
 
 
