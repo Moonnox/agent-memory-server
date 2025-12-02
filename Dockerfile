@@ -50,7 +50,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Disable auth by default for easier local development.
 # Override with DISABLE_AUTH=false in production.
-ENV DISABLE_AUTH=true
+ENV DISABLE_AUTH=false
 
 # Default to development mode (no separate worker needed).
 # For production, override the command to remove --no-worker and run a separate task-worker container.
