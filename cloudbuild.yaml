@@ -1,13 +1,19 @@
 steps:
-  # Build and push the Docker image using Kaniko (supports BuildKit --mount syntax)
-  - name: 'gcr.io/kaniko-project/executor:latest'
-    args:
-      - '--dockerfile=Dockerfile'
-      - '--context=dir:///workspace'
-      - '--destination=gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA'
-      - '--destination=gcr.io/$PROJECT_ID/agent-memory-server:latest'
-      - '--cache=true'
-      - '--cache-ttl=168h'
+  # Build the Docker image (using Dockerfile.cloudbuild which doesn't require BuildKit)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.cloudbuild', '-t', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA', '.']
+
+  # Tag as latest
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA', 'gcr.io/$PROJECT_ID/agent-memory-server:latest']
+
+  # Push the image with commit SHA tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA']
+
+  # Push the latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/agent-memory-server:latest']
 
   # Deploy API service to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -47,11 +53,12 @@ steps:
       - '--max-instances=3'
       - '--no-cpu-throttling'
 
-# Images are pushed by Kaniko directly, no need for separate images section
+images:
+  - 'gcr.io/$PROJECT_ID/agent-memory-server:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/agent-memory-server:latest'
 
 substitutions:
   _REGION: us-central1
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
