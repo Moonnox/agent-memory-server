@@ -158,8 +158,12 @@ def create_pgvector_store(embeddings: Embeddings) -> PGVectorStoreAdapter:
         )
     
     try:
-        # Create the engine
-        pg_engine = PGEngine.from_connection_string(url=settings.postgres_url)
+        # Create the engine with statement_cache_size=0 to support pgbouncer
+        # in transaction/statement pooling mode (which doesn't support prepared statements)
+        pg_engine = PGEngine.from_connection_string(
+            url=settings.postgres_url,
+            connect_args={"statement_cache_size": 0},
+        )
         
         # Create the vectorstore synchronously using create_sync
         # This avoids async initialization issues in the factory pattern

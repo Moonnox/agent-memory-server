@@ -38,12 +38,53 @@ def get_model_config(model_name: str) -> ModelConfig:
     )
 
 
+class ChatMessage:
+    """Unified wrapper for chat message content"""
+
+    def __init__(self, content: str):
+        self.content = content or ""
+
+
+class ChatChoice:
+    """Unified wrapper for a single choice in a chat response"""
+
+    def __init__(self, message: ChatMessage | dict[str, Any] | Any):
+        # Normalize message to ChatMessage for consistent access
+        if isinstance(message, ChatMessage):
+            self.message = message
+        elif isinstance(message, dict):
+            self.message = ChatMessage(message.get("content", ""))
+        elif hasattr(message, "content"):
+            # Object with content attribute (e.g., from OpenAI/LiteLLM)
+            self.message = ChatMessage(getattr(message, "content", ""))
+        else:
+            self.message = ChatMessage(str(message) if message else "")
+
+
 class ChatResponse:
     """Unified wrapper for chat responses from different providers"""
 
     def __init__(self, choices: list[Any], usage: dict[str, int]):
-        self.choices = choices or []
         self.usage = usage or {"total_tokens": 0}
+        # Normalize all choices to ChatChoice objects
+        self._choices: list[ChatChoice] = []
+        for choice in choices or []:
+            if isinstance(choice, ChatChoice):
+                self._choices.append(choice)
+            elif isinstance(choice, dict):
+                # Dict-style choice (e.g., from Anthropic wrapper)
+                msg = choice.get("message", {})
+                self._choices.append(ChatChoice(msg))
+            elif hasattr(choice, "message"):
+                # Object-style choice (e.g., from OpenAI/LiteLLM)
+                self._choices.append(ChatChoice(choice.message))
+            else:
+                # Fallback
+                self._choices.append(ChatChoice(choice))
+
+    @property
+    def choices(self) -> list[ChatChoice]:
+        return self._choices
 
     @property
     def total_tokens(self) -> int:
