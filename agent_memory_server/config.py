@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     # and save them as separate long-term memory records.
     enable_discrete_memory_extraction: bool = True
 
+    # Minimum importance score (0.0-1.0) for extracted memories.
+    # Higher values = more selective extraction. Set to 0.0 to keep all memories.
+    # Recommended: 0.3 for moderate filtering, 0.5+ for very selective extraction.
+    min_memory_importance_score: float = 0.0
+
     # Topic modeling
     topic_model_source: Literal["BERTopic", "LLM"] = "LLM"
     # If using BERTopic, use a supported model, such as

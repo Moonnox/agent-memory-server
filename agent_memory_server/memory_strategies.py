@@ -114,7 +114,23 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
     - text: str -- The actual information to store (with all contextual references grounded)
     - topics: list[str] -- The topics of the memory (top {top_k_topics})
     - entities: list[str] -- The entities of the memory
+    - importance: float -- A score from 0.0 to 1.0 indicating how important/useful this memory is for future interactions
     - event_date: str -- (Optional) ISO 8601 date string for when the event occurred (e.g. "2024-03-15T14:30:00Z"), primarily for episodic memories. If unknown, omit.
+
+    IMPORTANCE SCORING GUIDELINES (be discerning!):
+    - 0.9-1.0: Critical user preferences, important life events, key relationships, explicit requests to remember
+    - 0.7-0.8: Strong preferences, significant experiences, useful context about the user's work or life
+    - 0.5-0.6: Moderate preferences, somewhat useful facts that may inform future interactions
+    - 0.3-0.4: Minor preferences, tangentially useful information
+    - 0.0-0.2: Trivial observations, transient states, routine interactions with no lasting value
+
+    DO NOT EXTRACT (importance would be 0.0):
+    - Simple greetings, small talk, or pleasantries ("Hi, how are you?")
+    - Routine queries with no personal context ("What's the weather?", "Set a timer")
+    - Temporary states that will change ("I'm tired today", "I'm waiting for a package")
+    - Information that's obvious from context or common knowledge
+    - Procedural questions about how to do things (the system handles these)
+    - One-time task requests with no lasting relevance
 
     Return a list of memories, for example:
     {{
@@ -124,19 +140,26 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
                 "text": "User prefers window seats",
                 "topics": ["travel", "airline"],
                 "entities": ["User", "window seat"],
+                "importance": 0.75
             }},
             {{
                 "type": "episodic",
                 "text": "Trek discontinued the Trek 520 steel touring bike in 2023",
                 "topics": ["travel", "bicycle"],
                 "entities": ["Trek", "Trek 520 steel touring bike"],
+                "importance": 0.6,
                 "event_date": "2023-01-01T00:00:00Z"
             }},
         ]
     }}
 
+    If the message contains nothing worth remembering, return an empty list:
+    {{
+        "memories": []
+    }}
+
     IMPORTANT RULES:
-    1. Only extract information that would be genuinely useful for future interactions.
+    1. BE SELECTIVE: Only extract information that would be genuinely useful for FUTURE interactions. Many messages contain nothing worth remembering!
     2. Do not extract procedural knowledge - that is handled by the system's built-in tools and prompts.
     3. You are a large language model - do not extract facts that you already know.
     4. CRITICAL: ALWAYS ground ALL contextual references - never leave ANY pronouns, relative times, or vague place references unresolved. For the application user, always use "User" instead of their given name to avoid stale naming if they change their profile name later.
@@ -148,10 +171,11 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
     {message}
 
     STEP-BY-STEP PROCESS:
-    1. First, identify all pronouns in the text: he, she, they, him, her, them, his, hers, theirs
-    2. Determine what person each pronoun refers to based on the context
-    3. Replace every single pronoun with the actual person's name
-    4. Extract the grounded memories with NO pronouns remaining
+    1. First, assess if this message contains ANYTHING worth remembering long-term. If not, return empty memories list.
+    2. If there is useful information, identify all pronouns in the text: he, she, they, him, her, them, his, hers, theirs
+    3. Determine what person each pronoun refers to based on the context
+    4. Replace every single pronoun with the actual person's name
+    5. Extract the grounded memories with NO pronouns remaining, assigning appropriate importance scores
 
     Extracted memories:
     """
@@ -177,7 +201,23 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
                 )
                 try:
                     response_data = json.loads(response.choices[0].message.content)
-                    return response_data.get("memories", [])
+                    memories = response_data.get("memories", [])
+
+                    # Filter memories by importance threshold
+                    min_importance = settings.min_memory_importance_score
+                    if min_importance > 0.0:
+                        original_count = len(memories)
+                        memories = [
+                            m for m in memories
+                            if m.get("importance", 0.0) >= min_importance
+                        ]
+                        filtered_count = original_count - len(memories)
+                        if filtered_count > 0:
+                            logger.info(
+                                f"Filtered {filtered_count}/{original_count} memories below importance threshold {min_importance}"
+                            )
+
+                    return memories
                 except json.JSONDecodeError:
                     logger.error(
                         f"Error decoding JSON: {response.choices[0].message.content}"
