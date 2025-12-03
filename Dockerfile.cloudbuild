@@ -61,5 +61,6 @@ ENV DISABLE_AUTH=false
 #   Development: docker run -p 8000:8000 redislabs/agent-memory-server
 #   Production API: docker run -p 8000:8000 redislabs/agent-memory-server agent-memory api --host 0.0.0.0 --port 8000
 #   Production Worker: docker run redislabs/agent-memory-server agent-memory task-worker --concurrency 10
-CMD ["agent-memory", "api", "--host", "0.0.0.0", "--port", "8000", "--no-worker"]
+# Production mode - requires separate task-worker container
+CMD ["agent-memory", "api", "--host", "0.0.0.0", "--port", "8000"]
 
