@@ -258,35 +258,27 @@ async def extract_memories_with_strategy(
             offset += 25
 
     # Group memories by extraction strategy for batch processing
-    print(f"📦 DEBUG: Grouping {len(memories)} memories by strategy")
     strategy_groups = {}
     for memory in memories:
         if not memory or not memory.text:
-            print(f"🗑️ DEBUG: Deleting empty memory {memory.id}")
             logger.info(f"Deleting memory with no text: {memory}")
             await adapter.delete_memories([memory.id])
             continue
 
-        # Check if we have an extraction strategy, default if missing
-        strategy_name = getattr(memory, "extraction_strategy", "discrete")
-        config = getattr(memory, "extraction_strategy_config", {})
-        
-        print(f"🧩 DEBUG: Memory {memory.id} using strategy '{strategy_name}'")
-
         strategy_key = (
-            strategy_name,
-            tuple(sorted(config.items())),
+            memory.extraction_strategy,
+            tuple(sorted(memory.extraction_strategy_config.items())),
         )
         if strategy_key not in strategy_groups:
             strategy_groups[strategy_key] = []
         strategy_groups[strategy_key].append(memory)
 
-    all_new_memories = []
+    # Store tuples of (extracted_dict, source_memory) to preserve context
+    all_new_memories: list[tuple[dict, MemoryRecord]] = []
     all_updated_memories = []
 
     # Process each strategy group
     for (strategy_name, config_items), strategy_memories in strategy_groups.items():
-        print(f"⚙️ DEBUG: Running strategy '{strategy_name}' on {len(strategy_memories)} memories")
         logger.info(
             f"Processing {len(strategy_memories)} memories with strategy: {strategy_name}"
         )
@@ -297,52 +289,16 @@ async def extract_memories_with_strategy(
             strategy = get_memory_strategy(strategy_name, **config_dict)
         except ValueError as e:
             logger.error(f"Unknown strategy {strategy_name}: {e}")
-            print(f"⚠️ DEBUG: Strategy error: {e}, falling back to discrete")
             # Fall back to discrete strategy
             strategy = get_memory_strategy("discrete")
 
         # Process memories with this strategy
         for memory in strategy_memories:
             try:
-                print(f"🧠 DEBUG: Extracting from memory {memory.id} (len={len(memory.text)} chars)")
-                extracted_memories_data = await strategy.extract_memories(memory.text)
-                
-                if extracted_memories_data:
-                    print(f"✨ DEBUG: Extracted {len(extracted_memories_data)} new memories from {memory.id}")
-                    
-                    # Convert dicts to MemoryRecords immediately, preserving context
-                    for mem_data in extracted_memories_data:
-                        # Parse optional event_date
-                        event_date = None
-                        if "event_date" in mem_data and mem_data["event_date"]:
-                            try:
-                                from datetime import datetime
-                                # Handle ISO string parsing roughly
-                                event_date = datetime.fromisoformat(mem_data["event_date"].replace("Z", "+00:00"))
-                            except Exception as e:
-                                print(f"⚠️ DEBUG: Failed to parse event_date '{mem_data.get('event_date')}': {e}")
-
-                        new_record = MemoryRecord(
-                            id=str(ulid.ULID()),
-                            text=mem_data["text"],
-                            memory_type=mem_data.get("type", "episodic"),
-                            topics=mem_data.get("topics", []),
-                            entities=mem_data.get("entities", []),
-                            event_date=event_date,
-                            discrete_memory_extracted="t",
-                            extraction_strategy="discrete",
-                            extraction_strategy_config={},
-                            # Preserve context from source memory
-                            user_id=memory.user_id,
-                            agent_id=memory.agent_id,
-                            session_id=memory.session_id,
-                            namespace=memory.namespace,
-                            # Link back to source
-                            extracted_from=[memory.id]
-                        )
-                        all_new_memories.append(new_record)
-                else:
-                    print(f"🔸 DEBUG: No memories extracted from {memory.id}")
+                extracted_memories = await strategy.extract_memories(memory.text)
+                # Store extracted memories with their source for context inheritance
+                for extracted in extracted_memories:
+                    all_new_memories.append((extracted, memory))
 
                 # Update the memory to mark it as processed
                 updated_memory = memory.model_copy(
@@ -351,7 +307,6 @@ async def extract_memories_with_strategy(
                 all_updated_memories.append(updated_memory)
 
             except Exception as e:
-                print(f"❌ DEBUG: Extraction failed for {memory.id}: {e}")
                 logger.error(
                     f"Error extracting memory {memory.id} with strategy {strategy_name}: {e}"
                 )
@@ -361,20 +316,35 @@ async def extract_memories_with_strategy(
                 )
                 all_updated_memories.append(updated_memory)
 
-    # Update processed memories ONLY if we are configured to keep raw messages
-    if all_updated_memories:
-        from agent_memory_server.config import settings
-        if settings.index_all_messages_in_long_term_memory:
-            print(f"💾 DEBUG: Updating {len(all_updated_memories)} processed source memories")
-            await adapter.update_memories(all_updated_memories)
-        else:
-            print(f"🚫 DEBUG: Skipping update of source memories (not persisted)")
+    # Only update source memories if configured to persist raw messages
+    # Otherwise the source episodic memories would be persisted unnecessarily
+    from agent_memory_server.config import settings
+    if all_updated_memories and settings.index_all_messages_in_long_term_memory:
+        await adapter.update_memories(all_updated_memories)
 
-    # Index new extracted memories
+    # Index new extracted memories with inherited context from source
     if all_new_memories:
-        print(f"📥 DEBUG: Indexing {len(all_new_memories)} new extracted memories")
-        
+        long_term_memories = []
+        for new_memory, source_memory in all_new_memories:
+            record = MemoryRecord(
+                id=str(ulid.ULID()),
+                text=new_memory["text"],
+                memory_type=new_memory.get("type", "semantic"),
+                topics=new_memory.get("topics", []),
+                entities=new_memory.get("entities", []),
+                discrete_memory_extracted="t",
+                extraction_strategy="discrete",
+                extraction_strategy_config={},
+                # Inherit context from source memory
+                namespace=source_memory.namespace,
+                user_id=source_memory.user_id,
+                session_id=source_memory.session_id,
+                tags=source_memory.tags,
+                extracted_from=[source_memory.id],
+            )
+            long_term_memories.append(record)
+
         await index_long_term_memories(
-            all_new_memories,
+            long_term_memories,
             deduplicate=deduplicate,
         )

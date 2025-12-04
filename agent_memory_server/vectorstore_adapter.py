@@ -143,7 +143,7 @@ class LangChainFilterProcessor:
         self.process_tag_filter(user_id, "user_id", filter_dict)
         self.process_tag_filter(namespace, "namespace", filter_dict)
         self.process_tag_filter(memory_type, "memory_type", filter_dict)
-        self.process_tag_filter(tags, "tags", filter_dict)
+        self.process_tag_filter(tags, "search_tags", filter_dict)
         self.process_tag_filter(topics, "topics", filter_dict)
         self.process_tag_filter(entities, "entities", filter_dict)
         self.process_tag_filter(memory_hash, "memory_hash", filter_dict)
@@ -319,7 +319,7 @@ class VectorStoreAdapter(ABC):
             "user_id": memory.user_id,
             "namespace": memory.namespace,
             # Always store tags (empty list if None) so we can filter for "no tags"
-            "tags": memory.tags if memory.tags else [],
+            "search_tags": memory.tags if memory.tags else [],
             "created_at": created_at_val,
             "last_accessed": last_accessed_val,
             "updated_at": updated_at_val,
@@ -401,7 +401,7 @@ class VectorStoreAdapter(ABC):
             session_id=metadata.get("session_id"),
             user_id=metadata.get("user_id"),
             namespace=metadata.get("namespace"),
-            tags=self._parse_list_field(metadata.get("tags")),
+            tags=self._parse_list_field(metadata.get("search_tags")),
             created_at=created_at,
             last_accessed=last_accessed,
             updated_at=updated_at,
@@ -794,7 +794,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             "user_id": memory.user_id,
             "namespace": memory.namespace,
             # Always store tags (empty list if None) so we can filter for "no tags"
-            "tags": memory.tags if memory.tags else [],
+            "search_tags": memory.tags if memory.tags else [],
             "created_at": created_at_val,
             "last_accessed": last_accessed_val,
             "updated_at": updated_at_val,
@@ -1123,7 +1123,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
                 user_id=doc.metadata.get("user_id"),
                 session_id=doc.metadata.get("session_id"),
                 namespace=doc.metadata.get("namespace"),
-                tags=self._parse_list_field(doc.metadata.get("tags")),
+                tags=self._parse_list_field(doc.metadata.get("search_tags")),
                 pinned=doc.metadata.get("pinned", False),
                 access_count=int(doc.metadata.get("access_count", 0) or 0),
                 topics=self._parse_list_field(doc.metadata.get("topics")),

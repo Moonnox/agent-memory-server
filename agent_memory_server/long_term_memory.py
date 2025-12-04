@@ -97,14 +97,32 @@ def _parse_extraction_response_with_fallback(content: str, logger) -> dict:
 # Prompt for extracting memories from messages in working memory context
 WORKING_MEMORY_EXTRACTION_PROMPT = """
 You are a memory extraction assistant. Your job is to analyze conversation
-messages and extract information that might be useful in future conversations.
+messages and extract information about the USER that might be useful in future conversations.
+
+CRITICAL: FOCUS ON USER MESSAGES
+The conversation may contain both user messages and assistant/agent responses.
+Your PRIMARY focus should be on what the USER says, reveals, or prefers:
+- Extract preferences, facts, and experiences the USER explicitly states
+- Extract information the USER shares about themselves, their work, their life
+- Extract things the USER asks to be remembered
+- Extract user reactions, confirmations, or corrections to agent suggestions
+
+IGNORE AGENT/ASSISTANT RESPONSES UNLESS:
+- The user explicitly confirms or agrees with information the agent provided
+- The agent's response contains information the user specifically requested to remember
+- The user corrects the agent, revealing their actual preference
+
+DO NOT extract:
+- Generic agent suggestions or recommendations the user didn't respond to
+- Agent explanations or instructions
+- Agent-generated content that doesn't reflect user input
 
 Extract two types of memories from the following message:
-1. EPISODIC: Experiences or events that have a time dimension.
+1. EPISODIC: Experiences or events that the USER had with a time dimension.
    (They MUST have a time dimension to be "episodic.")
    Example: "User mentioned they visited Paris in August of 2025" or "User had trouble with the login process on 2025-01-15"
 
-2. SEMANTIC: User preferences, facts, or general knowledge about the agent's
+2. SEMANTIC: User preferences, facts about the user, or general knowledge about the user's
    environment that might be useful long-term.
    Example: "User prefers dark mode UI" or "User works as a data scientist"
 
@@ -116,10 +134,12 @@ For each memory, return a JSON object with the following fields:
 - event_date: str | null -- For episodic memories, the date/time when the event occurred (ISO 8601 format), null for semantic memories
 
 IMPORTANT RULES:
-1. Only extract information that might be genuinely useful for future interactions.
-2. Do not extract procedural knowledge or instructions.
-3. If given `user_id`, focus on user-specific information, preferences, and facts.
-4. Return an empty list if no useful memories can be extracted.
+1. PRIORITIZE USER INPUT: Focus on what the user says, not what the agent says. Agent responses are only relevant if the user confirms or reacts to them.
+2. Only extract information that might be genuinely useful for future interactions.
+3. Do not extract procedural knowledge or instructions.
+4. If given `user_id`, focus on user-specific information, preferences, and facts.
+5. Return an empty list if no useful memories can be extracted.
+6. Do not extract agent suggestions or recommendations the user didn't acknowledge.
 
 Message: {message}
 
@@ -316,9 +336,10 @@ async def merge_memories_with_llm(
     if len(user_ids) > 1:
         raise ValueError("Cannot merge memories with different user IDs")
 
-        # Create a unified set of topics and entities
+        # Create a unified set of topics, entities, and tags
     all_topics = set()
     all_entities = set()
+    all_tags = set()
 
     for memory in memories:
         if memory.topics:
@@ -326,6 +347,9 @@ async def merge_memories_with_llm(
 
         if memory.entities:
             all_entities.update(memory.entities)
+
+        if memory.tags:
+            all_tags.update(memory.tags)
 
     # Get the memory texts for LLM prompt
     memory_texts = [m.text for m in memories]
@@ -412,6 +436,7 @@ async def merge_memories_with_llm(
         updated_at=datetime.now(UTC),
         topics=list(all_topics) if all_topics else None,
         entities=list(all_entities) if all_entities else None,
+        tags=list(all_tags) if all_tags else None,
         memory_type=MemoryTypeEnum(memory_type),
         discrete_memory_extracted="t",
     )
@@ -676,6 +701,7 @@ async def compact_long_term_memories(
                         last_accessed=memory_result.last_accessed,
                         topics=memory_result.topics or [],
                         entities=memory_result.entities or [],
+                        tags=memory_result.tags or [],
                         memory_type=memory_result.memory_type,  # type: ignore
                         discrete_memory_extracted=memory_result.discrete_memory_extracted,  # type: ignore
                     )
@@ -861,6 +887,8 @@ async def index_long_term_memories(
         
         print(f"🔍 DEBUG: Extraction check - Enabled: {settings.enable_discrete_memory_extraction}, "
               f"Candidates: {len(needs_extraction)}/{len(processed_memories)}")
+        for mem in needs_extraction:
+            print(f"🏷️ DEBUG: Memory {mem.id} has tags: {mem.tags}")
         
         if needs_extraction:
             print(f"🚀 DEBUG: Running extraction directly for {len(needs_extraction)} memories")

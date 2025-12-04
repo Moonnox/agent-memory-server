@@ -40,6 +40,29 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def parse_tags_from_namespace(namespace: str | None) -> tuple[str | None, list[str] | None]:
+    """
+    Parse tags embedded in namespace string.
+    
+    Format: "base:namespace:tags:tag1,tag2,tag3"
+    
+    Returns:
+        Tuple of (base_namespace, tags_list)
+        If no tags embedded, returns (original_namespace, None)
+    """
+    if not namespace:
+        return namespace, None
+    
+    if ":tags:" in namespace:
+        parts = namespace.rsplit(":tags:", 1)
+        base_namespace = parts[0]
+        tags_str = parts[1] if len(parts) > 1 else ""
+        tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+        return base_namespace, tags if tags else None
+    
+    return namespace, None
+
+
 def parse_client_version(client_version: str | None) -> tuple[int, int, int] | None:
     """Parse client version string into tuple (major, minor, patch)"""
     if not client_version:
@@ -612,6 +635,7 @@ async def create_long_term_memory(
     # Validate and process memories
     print(f"📥 Received request to create {len(payload.memories)} long-term memories")
     for memory in payload.memories:
+        print(f"🏷️ DEBUG: Incoming memory {memory.id} has tags: {memory.tags}")
         # Enforce that ID is required on memory sent from clients
         if not memory.id:
             raise HTTPException(
@@ -629,6 +653,19 @@ async def create_long_term_memory(
         if not memory.agent_id and memory.metadata and "agent_id" in memory.metadata:
             memory.agent_id = memory.metadata["agent_id"]
             print(f"🔧 DEBUG: Lifted agent_id '{memory.agent_id}' from metadata for memory {memory.id}")
+
+        # Lift tags from metadata if not present at top level
+        if not memory.tags and memory.metadata and "tags" in memory.metadata:
+            memory.tags = memory.metadata["tags"]
+            print(f"🔧 DEBUG: Lifted tags '{memory.tags}' from metadata for memory {memory.id}")
+
+        # Parse tags from namespace if embedded (format: "namespace:tags:tag1,tag2")
+        if memory.namespace and ":tags:" in memory.namespace:
+            base_namespace, parsed_tags = parse_tags_from_namespace(memory.namespace)
+            memory.namespace = base_namespace
+            if parsed_tags and not memory.tags:
+                memory.tags = parsed_tags
+                print(f"🔧 DEBUG: Parsed tags '{memory.tags}' from namespace for memory {memory.id}")
             
         # Ensure persisted_at is server-assigned and read-only for clients
         # Clear any client-provided persisted_at value
@@ -662,14 +699,43 @@ async def search_long_term_memory(
     if not settings.long_term_memory:
         raise HTTPException(status_code=400, detail="Long-term memory is disabled")
 
+    # Parse tags from namespace filter if embedded (format: "namespace:tags:tag1,tag2")
+    # Store parsed tags for Python-side filtering (SQL array filters are problematic)
+    tags_to_filter: list[str] | None = None
+    if payload.namespace and hasattr(payload.namespace, 'eq') and payload.namespace.eq:
+        base_namespace, parsed_tags = parse_tags_from_namespace(payload.namespace.eq)
+        if parsed_tags:
+            from agent_memory_server.filters import Namespace
+            payload.namespace = Namespace(eq=base_namespace)
+            tags_to_filter = parsed_tags
+            print(f"🔧 DEBUG: Parsed tags filter '{parsed_tags}' from namespace, base namespace: '{base_namespace}'")
+
     # Extract filter objects from the payload
     filters = payload.get_filters()
 
+    # Remove tags from SQL filters - PGVector can't handle TEXT[] array filtering properly
+    # We'll filter by tags in Python after fetching results
+    if "tags" in filters:
+        if not tags_to_filter:
+            # Tags came from payload.tags, not namespace parsing
+            tags_filter = filters.pop("tags")
+            if hasattr(tags_filter, 'any') and tags_filter.any:
+                tags_to_filter = tags_filter.any
+            elif hasattr(tags_filter, 'eq') and tags_filter.eq:
+                tags_to_filter = [tags_filter.eq] if tags_filter.eq else None
+        else:
+            filters.pop("tags")
+
     logger.debug(f"Long-term search filters: {filters}")
+
+    # Fetch extra results if we need to filter by tags in Python
+    fetch_limit = payload.limit
+    if tags_to_filter:
+        fetch_limit = payload.limit * 3  # Fetch more to account for filtering
 
     kwargs = {
         "distance_threshold": payload.distance_threshold,
-        "limit": payload.limit,
+        "limit": fetch_limit,
         "offset": payload.offset,
         "optimize_query": optimize_query,
         **filters,
@@ -688,7 +754,17 @@ async def search_long_term_memory(
     if server_side_recency:
         kwargs["server_side_recency"] = True
         kwargs["recency_params"] = _build_recency_params(payload)
-        return await long_term_memory.search_long_term_memories(**kwargs)
+        results = await long_term_memory.search_long_term_memories(**kwargs)
+        # Apply Python-side tag filtering for server-side recency path too
+        if tags_to_filter and results.memories:
+            filtered_memories = []
+            for memory in results.memories:
+                memory_tags = memory.tags or []
+                if any(tag in memory_tags for tag in tags_to_filter):
+                    filtered_memories.append(memory)
+            results.memories = filtered_memories[:payload.limit]
+            results.total = len(filtered_memories)
+        return results
 
     raw_results = await long_term_memory.search_long_term_memories(**kwargs)
 
@@ -745,6 +821,18 @@ async def search_long_term_memory(
             )
     except Exception as e:
         logger.warning(f"Soft-filter fallback failed: {e}")
+
+    # Apply Python-side tag filtering (SQL can't handle TEXT[] arrays properly)
+    if tags_to_filter and raw_results.memories:
+        filtered_memories = []
+        for memory in raw_results.memories:
+            memory_tags = memory.tags or []
+            # Check if any of the search tags overlap with memory tags
+            if any(tag in memory_tags for tag in tags_to_filter):
+                filtered_memories.append(memory)
+        raw_results.memories = filtered_memories[:payload.limit]
+        raw_results.total = len(filtered_memories)
+        print(f"🏷️ DEBUG: Filtered {len(raw_results.memories)} memories by tags {tags_to_filter}")
 
     # Recency-aware re-ranking of results (configurable)
     # TODO: Why did we need to go this route instead of using recency boost at

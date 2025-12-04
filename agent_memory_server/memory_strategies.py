@@ -69,14 +69,32 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
     """Extract discrete semantic (factual) and episodic (time-oriented) facts from messages."""
 
     EXTRACTION_PROMPT = """
-    You are a long-memory manager. Your job is to analyze text and extract
-    information that might be useful in future conversations with users.
+    You are a long-memory manager. Your job is to analyze conversations and extract
+    information about the USER that might be useful in future conversations.
 
     CURRENT CONTEXT:
     Current date and time: {current_datetime}
 
+    CRITICAL: FOCUS ON USER MESSAGES
+    The conversation may contain both user messages and assistant/agent responses.
+    Your PRIMARY focus should be on what the USER says, reveals, or prefers:
+    - Extract preferences, facts, and experiences the USER explicitly states
+    - Extract information the USER shares about themselves, their work, their life
+    - Extract things the USER asks to be remembered
+    - Extract user reactions, confirmations, or corrections to agent suggestions
+
+    IGNORE AGENT/ASSISTANT RESPONSES UNLESS:
+    - The user explicitly confirms or agrees with information the agent provided
+    - The agent's response contains information the user specifically requested to remember
+    - The user corrects the agent, revealing their actual preference
+
+    DO NOT extract:
+    - Generic agent suggestions or recommendations the user didn't respond to
+    - Agent explanations or instructions
+    - Agent-generated content that doesn't reflect user input
+
     Extract two types of memories:
-    1. EPISODIC: Memories about specific episodes in time.
+    1. EPISODIC: Memories about specific episodes in time that the USER experienced.
        Example: "User had a bad experience on a flight to Paris in 2024"
 
     2. SEMANTIC: User preferences and general knowledge outside of your training data.
@@ -131,6 +149,8 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
     - Information that's obvious from context or common knowledge
     - Procedural questions about how to do things (the system handles these)
     - One-time task requests with no lasting relevance
+    - Agent suggestions or recommendations the user didn't acknowledge
+    - Generic agent responses or explanations
 
     Return a list of memories, for example:
     {{
@@ -144,38 +164,41 @@ class DiscreteMemoryStrategy(BaseMemoryStrategy):
             }},
             {{
                 "type": "episodic",
-                "text": "Trek discontinued the Trek 520 steel touring bike in 2023",
-                "topics": ["travel", "bicycle"],
-                "entities": ["Trek", "Trek 520 steel touring bike"],
-                "importance": 0.6,
-                "event_date": "2023-01-01T00:00:00Z"
+                "text": "User visited Tokyo in March 2024 and loved the cherry blossoms",
+                "topics": ["travel", "Japan"],
+                "entities": ["User", "Tokyo", "cherry blossoms"],
+                "importance": 0.7,
+                "event_date": "2024-03-15T00:00:00Z"
             }},
         ]
     }}
 
-    If the message contains nothing worth remembering, return an empty list:
+    If the message contains nothing worth remembering about the user, return an empty list:
     {{
         "memories": []
     }}
 
     IMPORTANT RULES:
     1. BE SELECTIVE: Only extract information that would be genuinely useful for FUTURE interactions. Many messages contain nothing worth remembering!
-    2. Do not extract procedural knowledge - that is handled by the system's built-in tools and prompts.
-    3. You are a large language model - do not extract facts that you already know.
-    4. CRITICAL: ALWAYS ground ALL contextual references - never leave ANY pronouns, relative times, or vague place references unresolved. For the application user, always use "User" instead of their given name to avoid stale naming if they change their profile name later.
-    5. MANDATORY: Replace every instance of "he/she/they/him/her/them/his/hers/theirs" with the actual person's name.
-    6. MANDATORY: Replace possessive pronouns like "her experience" with "User's experience" (if "her" refers to the user).
-    7. If you cannot determine what a contextual reference refers to, either omit that memory or use generic terms like "someone" instead of ungrounded pronouns.
+    2. PRIORITIZE USER INPUT: Focus on what the user says, not what the agent says. Agent responses are only relevant if the user confirms or reacts to them.
+    3. Do not extract procedural knowledge - that is handled by the system's built-in tools and prompts.
+    4. You are a large language model - do not extract facts that you already know.
+    5. CRITICAL: ALWAYS ground ALL contextual references - never leave ANY pronouns, relative times, or vague place references unresolved. For the application user, always use "User" instead of their given name to avoid stale naming if they change their profile name later.
+    6. MANDATORY: Replace every instance of "he/she/they/him/her/them/his/hers/theirs" with the actual person's name.
+    7. MANDATORY: Replace possessive pronouns like "her experience" with "User's experience" (if "her" refers to the user).
+    8. If you cannot determine what a contextual reference refers to, either omit that memory or use generic terms like "someone" instead of ungrounded pronouns.
 
     Message:
     {message}
 
     STEP-BY-STEP PROCESS:
-    1. First, assess if this message contains ANYTHING worth remembering long-term. If not, return empty memories list.
-    2. If there is useful information, identify all pronouns in the text: he, she, they, him, her, them, his, hers, theirs
-    3. Determine what person each pronoun refers to based on the context
-    4. Replace every single pronoun with the actual person's name
-    5. Extract the grounded memories with NO pronouns remaining, assigning appropriate importance scores
+    1. First, identify which parts of the message are from the USER vs the agent/assistant.
+    2. Focus primarily on USER messages. Assess if the user reveals anything worth remembering long-term.
+    3. Only consider agent responses if the user explicitly confirmed, agreed with, or corrected them.
+    4. If there is useful information, identify all pronouns in the text: he, she, they, him, her, them, his, hers, theirs
+    5. Determine what person each pronoun refers to based on the context
+    6. Replace every single pronoun with the actual person's name
+    7. Extract the grounded memories with NO pronouns remaining, assigning appropriate importance scores
 
     Extracted memories:
     """

@@ -109,10 +109,6 @@ class PGVectorStoreAdapter(LangChainVectorStoreAdapter):
         
         metadata = doc.metadata
         
-        # Map search_tags (PostgreSQL column) to tags (model field)
-        if "search_tags" in metadata:
-            metadata["tags"] = metadata.pop("search_tags")
-        
         # Parse datetime values back to datetime objects
         def parse_datetime(dt_val) -> datetime | None:
             if dt_val is None:
@@ -157,7 +153,7 @@ class PGVectorStoreAdapter(LangChainVectorStoreAdapter):
             session_id=metadata.get("session_id"),
             user_id=metadata.get("user_id"),
             namespace=metadata.get("namespace"),
-            tags=self._parse_list_field(metadata.get("tags")),
+            tags=self._parse_list_field(metadata.get("search_tags")),
             created_at=created_at,
             last_accessed=last_accessed,
             updated_at=updated_at,
@@ -241,11 +237,17 @@ def create_pgvector_store(embeddings: Embeddings) -> PGVectorStoreAdapter:
         )
     
     try:
-        # Create the engine with statement_cache_size=0 to support pgbouncer
-        # in transaction/statement pooling mode (which doesn't support prepared statements)
+        # Create the engine with connection pool health settings
+        # to handle connection drops from Supabase/PgBouncer
         pg_engine = PGEngine.from_connection_string(
             url=settings.postgres_url,
+            # asyncpg-specific settings for pgbouncer compatibility
             connect_args={"statement_cache_size": 0},
+            # Connection pool health checks
+            pool_pre_ping=True,   # Check connection health before use
+            pool_recycle=300,     # Recycle connections every 5 minutes
+            pool_size=5,          # Base pool size
+            max_overflow=10,      # Allow up to 10 additional connections
         )
         
         # Create the vectorstore synchronously using create_sync
