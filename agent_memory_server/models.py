@@ -18,6 +18,7 @@ from agent_memory_server.filters import (
     MemoryType,
     Namespace,
     SessionId,
+    Tags,
     Topics,
     UserId,
 )
@@ -129,6 +130,10 @@ class MemoryRecord(BaseModel):
     namespace: str | None = Field(
         default=None,
         description="Optional namespace for the memory record",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Optional tags for the memory record. Memories are scoped by tags - retrieval requires overlap with query tags, or both being empty.",
     )
     last_accessed: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -562,6 +567,10 @@ class SearchRequest(BaseModel):
         default=None,
         description="Optional namespace to filter by",
     )
+    tags: Tags | None = Field(
+        default=None,
+        description="Optional tags to filter by. Uses overlap semantics - memories match if they share any tag with the query, or if both have no tags.",
+    )
     topics: Topics | None = Field(
         default=None,
         description="Optional topics to filter by",
@@ -649,6 +658,9 @@ class SearchRequest(BaseModel):
 
         if self.namespace is not None:
             filters["namespace"] = self.namespace
+
+        if self.tags is not None:
+            filters["tags"] = self.tags
 
         if self.topics is not None:
             filters["topics"] = self.topics

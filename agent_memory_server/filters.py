@@ -250,3 +250,15 @@ class Id(TagFilter):
 
 class DiscreteMemoryExtracted(TagFilter):
     field: str = "discrete_memory_extracted"
+
+
+class Tags(TagFilter):
+    """Filter for tags field with special overlap semantics.
+    
+    Tags filtering has special behavior:
+    - If query has tags AND memory has tags: match if any tag overlaps
+    - If query has NO tags AND memory has NO tags: match
+    - If query has tags AND memory has NO tags: no match
+    - If query has NO tags AND memory has tags: no match
+    """
+    field: str = "tags"

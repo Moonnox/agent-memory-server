@@ -26,6 +26,7 @@ from agent_memory_server.filters import (
     MemoryType,
     Namespace,
     SessionId,
+    Tags,
     Topics,
     UserId,
 )
@@ -877,6 +878,7 @@ async def search_long_term_memories(
     session_id: SessionId | None = None,
     user_id: UserId | None = None,
     namespace: Namespace | None = None,
+    tags: Tags | None = None,
     created_at: CreatedAt | None = None,
     last_accessed: LastAccessed | None = None,
     topics: Topics | None = None,
@@ -899,6 +901,7 @@ async def search_long_term_memories(
         session_id: Optional session ID filter
         user_id: Optional user ID filter
         namespace: Optional namespace filter
+        tags: Optional tags filter (uses overlap semantics)
         created_at: Optional created at filter
         last_accessed: Optional last accessed filter
         topics: Optional topics filter
@@ -943,6 +946,7 @@ async def search_long_term_memories(
             session_id=session_id,
             user_id=user_id,
             namespace=namespace,
+            tags=tags,
             created_at=created_at,
             last_accessed=last_accessed,
             topics=topics,
@@ -979,6 +983,7 @@ async def search_long_term_memories(
                 session_id=session_id,
                 user_id=user_id,
                 namespace=namespace,
+                tags=tags,
                 created_at=created_at,
                 last_accessed=last_accessed,
                 topics=topics,

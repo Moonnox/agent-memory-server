@@ -99,6 +99,10 @@ class MemoryRecord(BaseModel):
         default=None,
         description="Optional namespace for the memory record",
     )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Optional tags for the memory record. Memories are scoped by tags - retrieval requires overlap with query tags, or both being empty.",
+    )
     last_accessed: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Datetime when the memory was last accessed",

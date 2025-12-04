@@ -61,6 +61,10 @@ class PGVectorStoreAdapter(LangChainVectorStoreAdapter):
         extracted_from_val = memory.extracted_from
         if isinstance(extracted_from_val, list):
             extracted_from_val = ",".join(extracted_from_val)
+        
+        # Keep tags as a list for TEXT[] array column in PostgreSQL
+        # Default to empty list if None for consistent filtering
+        search_tags_val = memory.tags if memory.tags else []
 
         metadata = {
             "id": memory.id,
@@ -69,6 +73,7 @@ class PGVectorStoreAdapter(LangChainVectorStoreAdapter):
             "user_id": memory.user_id,
             "agent_id": memory.agent_id,
             "namespace": memory.namespace,
+            "search_tags": search_tags_val,  # TEXT[] array column
             "created_at": created_at_val,
             "last_accessed": last_accessed_val,
             "updated_at": updated_at_val,
@@ -84,12 +89,89 @@ class PGVectorStoreAdapter(LangChainVectorStoreAdapter):
             "event_date": event_date_val,
         }
 
-        # Remove None values to keep metadata clean
-        metadata = {k: v for k, v in metadata.items() if v is not None}
+        # Remove None values to keep metadata clean (except search_tags which we always keep)
+        metadata = {k: v for k, v in metadata.items() if v is not None or k == "search_tags"}
 
         return Document(
             page_content=memory.text,
             metadata=metadata,
+        )
+
+    def document_to_memory(
+        self, doc: Document, score: float = 0.0
+    ):
+        """Convert a LangChain Document to a MemoryRecordResult.
+        
+        Maps the PostgreSQL 'search_tags' column back to the 'tags' field
+        expected by the memory model.
+        """
+        from agent_memory_server.models import MemoryRecordResult
+        
+        metadata = doc.metadata
+        
+        # Map search_tags (PostgreSQL column) to tags (model field)
+        if "search_tags" in metadata:
+            metadata["tags"] = metadata.pop("search_tags")
+        
+        # Parse datetime values back to datetime objects
+        def parse_datetime(dt_val) -> datetime | None:
+            if dt_val is None:
+                return None
+            if isinstance(dt_val, datetime):
+                return dt_val
+            if isinstance(dt_val, (int, float)):
+                return datetime.fromtimestamp(dt_val, tz=UTC)
+            if isinstance(dt_val, str):
+                return datetime.fromisoformat(dt_val)
+            return None
+
+        created_at = parse_datetime(metadata.get("created_at"))
+        last_accessed = parse_datetime(metadata.get("last_accessed"))
+        updated_at = parse_datetime(metadata.get("updated_at"))
+        persisted_at = parse_datetime(metadata.get("persisted_at"))
+        event_date = parse_datetime(metadata.get("event_date"))
+
+        # Provide defaults for required fields
+        if not created_at:
+            created_at = datetime.now(UTC)
+        if not last_accessed:
+            last_accessed = datetime.now(UTC)
+        if not updated_at:
+            updated_at = datetime.now(UTC)
+
+        # Normalize pinned/access_count from metadata
+        pinned_meta = metadata.get("pinned", 0)
+        try:
+            pinned_bool = bool(int(pinned_meta))
+        except Exception:
+            pinned_bool = bool(pinned_meta)
+        access_count_meta = metadata.get("access_count", 0)
+        try:
+            access_count_val = int(access_count_meta or 0)
+        except Exception:
+            access_count_val = 0
+
+        return MemoryRecordResult(
+            text=doc.page_content,
+            id=metadata.get("id") or metadata.get("id_") or "",
+            session_id=metadata.get("session_id"),
+            user_id=metadata.get("user_id"),
+            namespace=metadata.get("namespace"),
+            tags=self._parse_list_field(metadata.get("tags")),
+            created_at=created_at,
+            last_accessed=last_accessed,
+            updated_at=updated_at,
+            pinned=pinned_bool,
+            access_count=access_count_val,
+            topics=self._parse_list_field(metadata.get("topics")),
+            entities=self._parse_list_field(metadata.get("entities")),
+            memory_hash=metadata.get("memory_hash"),
+            discrete_memory_extracted=metadata.get("discrete_memory_extracted", "f"),
+            memory_type=metadata.get("memory_type", "message"),
+            persisted_at=persisted_at,
+            extracted_from=self._parse_list_field(metadata.get("extracted_from")),
+            event_date=event_date,
+            dist=score,
         )
 
 
@@ -112,6 +194,7 @@ async def _init_pgvector_table(pg_engine: PGEngine) -> None:
                 Column("user_id", "TEXT"),
                 Column("agent_id", "TEXT"),
                 Column("namespace", "TEXT"),
+                Column("search_tags", "TEXT[]"),  # Array of tags for scoping
                 Column("created_at", "TIMESTAMP WITH TIME ZONE"),
                 Column("last_accessed", "TIMESTAMP WITH TIME ZONE"),
                 Column("updated_at", "TIMESTAMP WITH TIME ZONE"),
@@ -180,6 +263,7 @@ def create_pgvector_store(embeddings: Embeddings) -> PGVectorStoreAdapter:
                 "user_id", 
                 "agent_id",
                 "namespace",
+                "search_tags",  # TEXT[] array for tag-based scoping
                 "created_at",
                 "last_accessed",
                 "updated_at",

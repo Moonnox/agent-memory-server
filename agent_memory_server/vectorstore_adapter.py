@@ -27,6 +27,7 @@ from agent_memory_server.filters import (
     MemoryType,
     Namespace,
     SessionId,
+    Tags,
     Topics,
     UserId,
 )
@@ -123,6 +124,7 @@ class LangChainFilterProcessor:
         session_id: SessionId | None = None,
         user_id: UserId | None = None,
         namespace: Namespace | None = None,
+        tags: Tags | None = None,
         topics: Topics | None = None,
         entities: Entities | None = None,
         memory_type: MemoryType | None = None,
@@ -141,6 +143,7 @@ class LangChainFilterProcessor:
         self.process_tag_filter(user_id, "user_id", filter_dict)
         self.process_tag_filter(namespace, "namespace", filter_dict)
         self.process_tag_filter(memory_type, "memory_type", filter_dict)
+        self.process_tag_filter(tags, "tags", filter_dict)
         self.process_tag_filter(topics, "topics", filter_dict)
         self.process_tag_filter(entities, "entities", filter_dict)
         self.process_tag_filter(memory_hash, "memory_hash", filter_dict)
@@ -183,6 +186,7 @@ class VectorStoreAdapter(ABC):
         session_id: SessionId | None = None,
         user_id: UserId | None = None,
         namespace: Namespace | None = None,
+        tags: Tags | None = None,
         created_at: CreatedAt | None = None,
         last_accessed: LastAccessed | None = None,
         topics: Topics | None = None,
@@ -205,6 +209,7 @@ class VectorStoreAdapter(ABC):
             session_id: Optional session ID filter
             user_id: Optional user ID filter
             namespace: Optional namespace filter
+            tags: Optional tags filter (uses overlap semantics)
             created_at: Optional created at filter
             last_accessed: Optional last accessed filter
             topics: Optional topics filter
@@ -313,6 +318,8 @@ class VectorStoreAdapter(ABC):
             "session_id": memory.session_id,
             "user_id": memory.user_id,
             "namespace": memory.namespace,
+            # Always store tags (empty list if None) so we can filter for "no tags"
+            "tags": memory.tags if memory.tags else [],
             "created_at": created_at_val,
             "last_accessed": last_accessed_val,
             "updated_at": updated_at_val,
@@ -328,8 +335,8 @@ class VectorStoreAdapter(ABC):
             "event_date": event_date_val,
         }
 
-        # Remove None values to keep metadata clean
-        metadata = {k: v for k, v in metadata.items() if v is not None}
+        # Remove None values to keep metadata clean (except tags which we always keep)
+        metadata = {k: v for k, v in metadata.items() if v is not None or k == "tags"}
 
         return Document(
             page_content=memory.text,
@@ -394,6 +401,7 @@ class VectorStoreAdapter(ABC):
             session_id=metadata.get("session_id"),
             user_id=metadata.get("user_id"),
             namespace=metadata.get("namespace"),
+            tags=self._parse_list_field(metadata.get("tags")),
             created_at=created_at,
             last_accessed=last_accessed,
             updated_at=updated_at,
@@ -473,6 +481,7 @@ class VectorStoreAdapter(ABC):
         session_id: SessionId | None = None,
         user_id: UserId | None = None,
         namespace: Namespace | None = None,
+        tags: Tags | None = None,
         topics: Topics | None = None,
         entities: Entities | None = None,
         memory_type: MemoryType | None = None,
@@ -503,6 +512,7 @@ class VectorStoreAdapter(ABC):
             session_id=session_id,
             user_id=user_id,
             namespace=namespace,
+            tags=tags,
             topics=topics,
             entities=entities,
             memory_type=memory_type,
@@ -576,6 +586,7 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
         session_id: SessionId | None = None,
         user_id: UserId | None = None,
         namespace: Namespace | None = None,
+        tags: Tags | None = None,
         created_at: CreatedAt | None = None,
         last_accessed: LastAccessed | None = None,
         topics: Topics | None = None,
@@ -598,6 +609,7 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
                 session_id=session_id,
                 user_id=user_id,
                 namespace=namespace,
+                tags=tags,
                 topics=topics,
                 entities=entities,
                 memory_type=memory_type,
@@ -781,6 +793,8 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             "session_id": memory.session_id,
             "user_id": memory.user_id,
             "namespace": memory.namespace,
+            # Always store tags (empty list if None) so we can filter for "no tags"
+            "tags": memory.tags if memory.tags else [],
             "created_at": created_at_val,
             "last_accessed": last_accessed_val,
             "updated_at": updated_at_val,
@@ -796,8 +810,8 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             "event_date": event_date_val,
         }
 
-        # Remove None values to keep metadata clean
-        metadata = {k: v for k, v in metadata.items() if v is not None}
+        # Remove None values to keep metadata clean (except tags which we always keep)
+        metadata = {k: v for k, v in metadata.items() if v is not None or k == "tags"}
 
         # NOTE: We don't get back Document.id from RedisVL (because RedisVectorStore
         # doesn't return it). Instead, we get our client-generated ID back as the "id_"
@@ -981,6 +995,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
         session_id: SessionId | None = None,
         user_id: UserId | None = None,
         namespace: Namespace | None = None,
+        tags: Tags | None = None,
         created_at: CreatedAt | None = None,
         last_accessed: LastAccessed | None = None,
         topics: Topics | None = None,
@@ -1008,6 +1023,9 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             filters.append(namespace.to_filter())
         if memory_type:
             filters.append(memory_type.to_filter())
+        # Tags filter uses special overlap semantics - handled below
+        if tags:
+            filters.append(tags.to_filter())
         if topics:
             filters.append(topics.to_filter())
         if entities:
@@ -1105,6 +1123,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
                 user_id=doc.metadata.get("user_id"),
                 session_id=doc.metadata.get("session_id"),
                 namespace=doc.metadata.get("namespace"),
+                tags=self._parse_list_field(doc.metadata.get("tags")),
                 pinned=doc.metadata.get("pinned", False),
                 access_count=int(doc.metadata.get("access_count", 0) or 0),
                 topics=self._parse_list_field(doc.metadata.get("topics")),

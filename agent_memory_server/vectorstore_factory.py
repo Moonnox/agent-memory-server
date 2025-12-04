@@ -221,6 +221,7 @@ def create_redis_vectorstore(embeddings: Embeddings) -> VectorStore:
             {"name": "session_id", "type": "tag"},
             {"name": "user_id", "type": "tag"},
             {"name": "namespace", "type": "tag"},
+            {"name": "tags", "type": "tag"},
             {"name": "memory_type", "type": "tag"},
             {"name": "topics", "type": "tag"},
             {"name": "entities", "type": "tag"},
