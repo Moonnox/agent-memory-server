@@ -134,8 +134,16 @@ class LangChainFilterProcessor:
         memory_hash: MemoryHash | None = None,
         id: Id | None = None,
         discrete_memory_extracted: DiscreteMemoryExtracted | None = None,
+        apply_empty_tags_filter: bool = True,
     ) -> dict[str, Any] | None:
-        """Convert filter objects to backend format for LangChain vectorstores."""
+        """Convert filter objects to backend format for LangChain vectorstores.
+        
+        Args:
+            apply_empty_tags_filter: If True and tags is None, filter for memories with 
+                empty/no tags. This implements the "overlap semantics" where no tags in 
+                query = only match memories with no tags. Set to False to skip tag 
+                filtering entirely when tags is None.
+        """
         filter_dict: dict[str, Any] = {}
 
         # Apply tag/string filters using the helper function
@@ -143,7 +151,15 @@ class LangChainFilterProcessor:
         self.process_tag_filter(user_id, "user_id", filter_dict)
         self.process_tag_filter(namespace, "namespace", filter_dict)
         self.process_tag_filter(memory_type, "memory_type", filter_dict)
-        self.process_tag_filter(tags, "search_tags", filter_dict)
+        
+        # Special handling for tags: if no tags filter provided but apply_empty_tags_filter
+        # is True, filter for memories with empty/no tags (overlap semantics)
+        if tags:
+            self.process_tag_filter(tags, "search_tags", filter_dict)
+        elif apply_empty_tags_filter:
+            # Filter for memories with empty tags array
+            filter_dict["search_tags"] = {"$eq": []}
+        
         self.process_tag_filter(topics, "topics", filter_dict)
         self.process_tag_filter(entities, "entities", filter_dict)
         self.process_tag_filter(memory_hash, "memory_hash", filter_dict)
@@ -201,6 +217,7 @@ class VectorStoreAdapter(ABC):
         recency_params: dict | None = None,
         limit: int = 10,
         offset: int = 0,
+        apply_empty_tags_filter: bool = True,
     ) -> MemoryRecordResults:
         """Search memories in the vector store.
 
@@ -210,6 +227,8 @@ class VectorStoreAdapter(ABC):
             user_id: Optional user ID filter
             namespace: Optional namespace filter
             tags: Optional tags filter (uses overlap semantics)
+            apply_empty_tags_filter: If True and tags is None, filter for memories with 
+                empty/no tags (overlap semantics). Set to False to skip tag filtering.
             created_at: Optional created at filter
             last_accessed: Optional last accessed filter
             topics: Optional topics filter
@@ -491,6 +510,7 @@ class VectorStoreAdapter(ABC):
         memory_hash: MemoryHash | None = None,
         id: Id | None = None,
         discrete_memory_extracted: DiscreteMemoryExtracted | None = None,
+        apply_empty_tags_filter: bool = True,
     ) -> dict[str, Any] | None:
         """Convert filter objects to standard LangChain dictionary format.
 
@@ -503,6 +523,9 @@ class VectorStoreAdapter(ABC):
 
         Args:
             Filter objects from filters.py
+            apply_empty_tags_filter: If True and tags is None, filter for memories with 
+                empty/no tags. This implements the "overlap semantics" where no tags in 
+                query = only match memories with no tags.
 
         Returns:
             Dictionary filter in format: {"field": {"$eq": "value"}} or None
@@ -521,6 +544,8 @@ class VectorStoreAdapter(ABC):
             event_date=event_date,
             memory_hash=memory_hash,
             id=id,
+            discrete_memory_extracted=discrete_memory_extracted,
+            apply_empty_tags_filter=apply_empty_tags_filter,
         )
 
         logger.debug(f"Converted to LangChain filter format: {filter_dict}")
@@ -601,8 +626,14 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
         recency_params: dict | None = None,
         limit: int = 10,
         offset: int = 0,
+        apply_empty_tags_filter: bool = True,
     ) -> MemoryRecordResults:
-        """Search memories using the LangChain MemoryRedisVectorStore."""
+        """Search memories using the LangChain MemoryRedisVectorStore.
+        
+        Args:
+            apply_empty_tags_filter: If True and tags is None, filter for memories with 
+                empty/no tags (overlap semantics). Set to False to skip tag filtering.
+        """
         try:
             # Convert filters to LangChain format
             filter_dict = self._convert_filters_to_backend_format(
@@ -619,6 +650,7 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
                 memory_hash=memory_hash,
                 id=id,
                 discrete_memory_extracted=discrete_memory_extracted,
+                apply_empty_tags_filter=apply_empty_tags_filter,
             )
 
             # Use LangChain's similarity search with filters
@@ -713,10 +745,12 @@ class LangChainVectorStoreAdapter(VectorStoreAdapter):
             }  # Large number to get all results
 
             # Apply filters using the proper method signature
+            # Note: Don't apply empty tags filter for counting - we want to count all memories
             backend_filter = self._convert_filters_to_backend_format(
                 namespace=namespace_filter,
                 user_id=user_id_filter,
                 session_id=session_id_filter,
+                apply_empty_tags_filter=False,
             )
             if backend_filter:
                 search_kwargs["filter"] = backend_filter
@@ -961,6 +995,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
                     "session_id",
                     "user_id",
                     "namespace",
+                    "search_tags",  # Include tags for filtering
                     "created_at",
                     "last_accessed",
                     "updated_at",
@@ -1010,9 +1045,17 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
         recency_params: dict | None = None,
         limit: int = 10,
         offset: int = 0,
+        apply_empty_tags_filter: bool = True,
     ) -> MemoryRecordResults:
-        """Search memories RedisVectorStore."""
+        """Search memories RedisVectorStore.
+        
+        Args:
+            apply_empty_tags_filter: If True and tags is None, filter for memories with 
+                empty/no tags (overlap semantics). Set to False to skip tag filtering.
+        """
         filters = []
+        # Track if we need to post-filter for empty tags (fallback for Redis)
+        filter_for_empty_tags = apply_empty_tags_filter and tags is None
 
         # Add individual filters using the .to_filter() methods from filters.py
         if session_id:
@@ -1023,7 +1066,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             filters.append(namespace.to_filter())
         if memory_type:
             filters.append(memory_type.to_filter())
-        # Tags filter uses special overlap semantics - handled below
+        # Tags filter uses special overlap semantics
         if tags:
             filters.append(tags.to_filter())
         if topics:
@@ -1054,7 +1097,7 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
         # If server-side recency is requested, attempt RedisVL query first (DB-level path)
         if server_side_recency:
             try:
-                return await self._search_with_redis_aggregation(
+                result = await self._search_with_redis_aggregation(
                     query=query,
                     redis_filter=redis_filter,
                     limit=limit,
@@ -1062,6 +1105,18 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
                     distance_threshold=distance_threshold,
                     recency_params=recency_params,
                 )
+                # Apply empty tags filter if needed (overlap semantics)
+                if filter_for_empty_tags:
+                    filtered_memories = [
+                        m for m in result.memories
+                        if not m.tags  # Match memories with None or empty list tags
+                    ]
+                    return MemoryRecordResults(
+                        memories=filtered_memories[:limit],
+                        total=result.total,
+                        next_offset=result.next_offset,
+                    )
+                return result
             except Exception as e:
                 logger.warning(
                     f"RedisVL DB-level recency search failed; falling back to client-side path: {e}"
@@ -1151,6 +1206,13 @@ class RedisVectorStoreAdapter(VectorStoreAdapter):
             memory_results = self._apply_client_side_recency_reranking(
                 memory_results, recency_params
             )
+
+        # Post-filter for empty tags if requested (overlap semantics: no tags in query = only match memories with no tags)
+        if filter_for_empty_tags:
+            memory_results = [
+                m for m in memory_results
+                if not m.tags  # Match memories with None or empty list tags
+            ]
 
         next_offset = offset + limit if len(search_results) > offset + limit else None
 

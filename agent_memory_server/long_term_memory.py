@@ -1315,6 +1315,8 @@ async def deduplicate_by_semantic_search(
         session_id_filter = SessionId(eq=session_id or memory.session_id)
 
     # Use the vectorstore adapter for semantic search
+    # Note: We disable empty tags filtering here because we do our own exact tag matching
+    # after the search to enforce that memories can only be merged if tags match exactly
     # TODO: Paginate through results?
     search_result = await adapter.search_memories(
         query=memory.text,  # Use memory text for semantic search
@@ -1323,6 +1325,7 @@ async def deduplicate_by_semantic_search(
         session_id=session_id_filter,
         distance_threshold=vector_distance_threshold,
         limit=10,
+        apply_empty_tags_filter=False,  # We do our own exact tag matching below
     )
 
     vector_search_result = search_result.memories if search_result else []
