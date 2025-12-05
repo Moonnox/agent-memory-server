@@ -51,6 +51,29 @@ from agent_memory_server.utils.recency import (
     update_memory_hash_if_text_changed,
 )
 from agent_memory_server.utils.redis import get_redis_conn
+
+
+def parse_tags_from_namespace(namespace: str | None) -> tuple[str | None, list[str] | None]:
+    """
+    Parse tags embedded in namespace string.
+    
+    Format: "base:namespace:tags:tag1,tag2,tag3"
+    
+    Returns:
+        Tuple of (base_namespace, tags_list)
+        If no tags embedded, returns (original_namespace, None)
+    """
+    if not namespace:
+        return namespace, None
+    
+    if ":tags:" in namespace:
+        parts = namespace.rsplit(":tags:", 1)
+        base_namespace = parts[0]
+        tags_str = parts[1] if len(parts) > 1 else ""
+        tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+        return base_namespace, tags if tags else None
+    
+    return namespace, None
 from agent_memory_server.vectorstore_factory import get_vectorstore_adapter
 
 
@@ -213,6 +236,7 @@ async def extract_memories_from_session_thread(
     namespace: str | None = None,
     user_id: str | None = None,
     llm_client: OpenAIClientWrapper | AnthropicClientWrapper | None = None,
+    tags: list[str] | None = None,
 ) -> list[MemoryRecord]:
     """
     Extract memories from the entire conversation thread in working memory.
@@ -225,6 +249,7 @@ async def extract_memories_from_session_thread(
         namespace: Optional namespace for the memories
         user_id: Optional user ID for the memories
         llm_client: Optional LLM client for extraction
+        tags: Optional tags to apply to extracted memories
 
     Returns:
         List of extracted memory records with proper contextual grounding
@@ -284,6 +309,7 @@ async def extract_memories_from_session_thread(
                 session_id=session_id,
                 namespace=namespace,
                 user_id=user_id,
+                tags=tags,  # Include tags parsed from namespace
                 discrete_memory_extracted="t",  # Mark as extracted
             )
             extracted_memories.append(memory)
@@ -1304,6 +1330,20 @@ async def deduplicate_by_semantic_search(
     # Filter out the memory itself from the search results (avoid self-duplication)
     vector_search_result = [m for m in vector_search_result if m.id != memory.id]
 
+    # Only merge memories if search_tags match EXACTLY
+    # Normalize tags: None and empty list are considered equivalent (empty set)
+    def normalize_tags(tags: list[str] | None) -> frozenset[str]:
+        """Normalize tags to a frozenset for comparison."""
+        if not tags:
+            return frozenset()
+        return frozenset(tags)
+
+    memory_tags = normalize_tags(memory.tags)
+    vector_search_result = [
+        m for m in vector_search_result
+        if normalize_tags(m.tags) == memory_tags
+    ]
+
     if vector_search_result and len(vector_search_result) > 0:
         # Found semantically similar memories
         similar_memory_ids = [memory.id for memory in vector_search_result]
@@ -1358,10 +1398,13 @@ async def promote_working_memory_to_long_term(
 
     redis = redis_client or await get_redis_conn()
 
+    # Parse tags from namespace if embedded (format: "namespace:tags:tag1,tag2")
+    base_namespace, parsed_tags = parse_tags_from_namespace(namespace)
+    
     # Get current working memory
     current_working_memory = await working_memory.get_working_memory(
         session_id=session_id,
-        namespace=namespace,
+        namespace=base_namespace,  # Use base namespace without tags suffix
         user_id=user_id,
         redis_client=redis,
     )
@@ -1392,8 +1435,9 @@ async def promote_working_memory_to_long_term(
             )
             extracted_memories = await extract_memories_from_session_thread(
                 session_id=session_id,
-                namespace=namespace,
+                namespace=base_namespace,
                 user_id=user_id,
+                tags=parsed_tags,
             )
 
             # Mark ALL messages in the session as extracted since we processed the full thread
@@ -1473,8 +1517,9 @@ async def promote_working_memory_to_long_term(
                     id=msg.id,
                     session_id=session_id,
                     text=f"{msg.role}: {msg.content}",
-                    namespace=namespace,
+                    namespace=base_namespace,
                     user_id=current_working_memory.user_id,
+                    tags=parsed_tags,  # Include tags parsed from namespace
                     persisted_at=None,
                     created_at=msg.created_at,
                     memory_type=MemoryTypeEnum.MESSAGE,
